@@ -1,0 +1,209 @@
+"""
+US Census ACS Pull Script
+----------------------------------
+Pulls ACS 5-Year data for Marion County, Indiana and contiguous counties,
+using the Census API. Outputs cleaned and renamed tables to an Excel file.
+
+Author: Stephen “Aaron” Morrison
+Date: 2025-11-26
+"""
+
+# ===============================================================
+# 1. Imports & Configuration
+# ===============================================================
+import os
+import re
+import requests
+import pandas as pd
+from typing import Dict, List
+
+# --- USER CONFIG ---
+API_KEY = (confidential)
+SAVE_DIR = (confidential)
+OUTFILE = os.path.join(SAVE_DIR, "indiana_marion_region_acs_cbp_appended.xlsx")
+
+STATE_FIPS = "18"  # Indiana
+LATEST_ACS5 = 2023
+ACS_YEARS = list(range(LATEST_ACS5 - 4, LATEST_ACS5 + 1))  # [2019..2023]
+
+# --- County FIPS for Marion and contiguous counties ---
+county_name_to_fips = {
+    "Boone": "011",
+    "Hamilton": "057",
+    "Hancock": "059",
+    "Hendricks": "063",
+    "Johnson": "081",
+    "Madison": "095",
+    "Marion": "097",
+    "Morgan": "109",
+    "Shelby": "145"
+}
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# ===============================================================
+# 2. Helper Functions for API Pull
+# ===============================================================
+def get(url: str, params=None) -> requests.Response:
+    r = requests.get(url, params=params, timeout=60)
+    r.raise_for_status()
+    return r
+
+def group_variables(year: int, dataset: str, table: str) -> pd.DataFrame:
+    """Get the variable metadata for a given ACS table."""
+    url = f"https://api.census.gov/data/{year}/{dataset}/groups/{table}.json"
+    r = get(url)
+    data = r.json()
+    return pd.DataFrame(data["variables"]).T.reset_index(names="name")
+
+def acs_pull(year: int, vars: List[str], for_geo: str, in_geo: str=None, dataset="acs/acs5") -> pd.DataFrame:
+    """Pull ACS data for specific vars, year, and geography."""
+    url = f"https://api.census.gov/data/{year}/{dataset}"
+    params = {
+        "get": ",".join(["NAME"] + vars),
+        "for": for_geo,
+        "key": API_KEY
+    }
+    if in_geo:
+        params["in"] = in_geo
+    r = get(url, params)
+    data = r.json()
+    df = pd.DataFrame(data[1:], columns=data[0])
+    df["year"] = year
+    return df
+
+# ===============================================================
+# 3. Variable Lookups
+# ===============================================================
+def s2301_vars(year: int):
+    g = group_variables(year, "acs/acs5/subject", "S2301")
+    getvar = lambda label: g.loc[g["label"].str.contains(label, case=False), "name"].iloc[0]
+    return {
+        "lfpr": getvar("Labor Force Participation Rate!!Population 16 years and over"),
+        "unemp": getvar("Unemployment Rate!!Population 16 years and over"),
+        "underemp": g.loc[g["label"].str.contains("Worked part-time for economic reasons", case=False), "name"].iloc[0]
+    }
+
+def s1701_vars(year: int):
+    g = group_variables(year, "acs/acs5/subject", "S1701")
+    return {"poverty_pct": g.loc[g["label"].str.contains("Percent below poverty level", case=False), "name"].iloc[0]}
+
+def b01003_vars(year: int):
+    g = group_variables(year, "acs/acs5", "B01003")
+    return {"total_pop": g.loc[g["name"].str.endswith("_001E"), "name"].iloc[0]}
+
+def s1810_vars(year: int):
+    g = group_variables(year, "acs/acs5/subject", "S1810")
+    return {"disability_pct": g.loc[g["label"].str.contains("With a disability", case=False) & g["name"].str.endswith("E"), "name"].iloc[0]}
+
+def b19013_vars(year: int):
+    g = group_variables(year, "acs/acs5", "B19013")
+    return {"median_hh_income": g.loc[g["name"].str.endswith("_001E"), "name"].iloc[0]}
+
+def s2405_vars(year: int):
+    g = group_variables(year, "acs/acs5/subject", "S2405")
+    industry_vars = g[g["name"].str.endswith("E")]["name"].tolist()
+    return {"industries": industry_vars}
+
+# ===============================================================
+# 4. Pull Data by Year
+# ===============================================================
+def acs_all_geos_by_year(year: int) -> Dict[str, pd.DataFrame]:
+    v_s2301 = s2301_vars(year)
+    v_s1701 = s1701_vars(year)
+    v_b01003 = b01003_vars(year)
+    v_s1810 = s1810_vars(year)
+    v_b19013 = b19013_vars(year)
+    v_s2405 = s2405_vars(year)
+
+    subject_vars = [v_s2301["lfpr"], v_s2301["unemp"], v_s2301["underemp"], v_s1701["poverty_pct"], v_s1810["disability_pct"]]
+    detailed_vars = [v_b01003["total_pop"], v_b19013["median_hh_income"]]
+
+    county_for, county_filter = "county:*", f"state:{STATE_FIPS}"
+    target_fips = set(county_name_to_fips.values())
+
+    counties_sub = acs_pull(year, subject_vars, county_for, county_filter, dataset="acs/acs5/subject")
+    counties_det = acs_pull(year, detailed_vars, county_for, county_filter, dataset="acs/acs5")
+
+    counties = counties_det.merge(counties_sub, on=["NAME","state","county","year"], how="outer")
+    counties = counties[counties["county"].isin(target_fips)]
+    counties["geo"] = "county"
+
+    # state-level
+    state_sub = acs_pull(year, subject_vars, "state:*", dataset="acs/acs5/subject")
+    state_det = acs_pull(year, detailed_vars, "state:*", dataset="acs/acs5")
+    state = state_det.merge(state_sub, on=["NAME","state","year"], how="outer")
+    state = state[state["state"] == STATE_FIPS]
+    state["geo"] = "state"
+
+    # industries
+    industry_vars = v_s2405["industries"]
+    ind_c = acs_pull(year, industry_vars, county_for, county_filter, dataset="acs/acs5/subject")
+    ind_c = ind_c[ind_c["county"].isin(target_fips)]
+    ind_c["geo"] = "county"
+
+    ind_s = acs_pull(year, industry_vars, "state:*", dataset="acs/acs5/subject")
+    ind_s = ind_s[ind_s["state"] == STATE_FIPS]
+    ind_s["geo"] = "state"
+
+    return {
+        "acs_main": pd.concat([counties, state], ignore_index=True),
+        "acs_industries": pd.concat([ind_c, ind_s], ignore_index=True)
+    }
+
+# ===============================================================
+# 5. Combine All Years
+# ===============================================================
+acs_frames, ind_frames = [], []
+for y in ACS_YEARS:
+    out = acs_all_geos_by_year(y)
+    acs_frames.append(out["acs_main"])
+    ind_frames.append(out["acs_industries"])
+
+ACS_MAIN = pd.concat(acs_frames, ignore_index=True)
+ACS_INDUSTRY = pd.concat(ind_frames, ignore_index=True)
+
+# ===============================================================
+# 6. Rename Columns to Human Labels
+# ===============================================================
+# --- Simple label map ---
+label_map = {
+    "B01003_001E": "Total population",
+    "B19013_001E": "Median household income ($)",
+    "S2301_C02_001E": "Labor force participation rate (%)",
+    "S2301_C04_001E": "Unemployment rate (%)",
+    "S2301_C07_001E": "Worked part-time for economic reasons (%)",
+    "S1701_C03_001E": "% below poverty level",
+    "S1810_C03_001E": "% with a disability"
+}
+ACS_MAIN_RENAMED = ACS_MAIN.rename(columns=label_map)
+
+# --- S2405 industry renames ---
+s2405_label_map = {
+    "S2405_C01_001E": "Employed 16+ (total)",
+    "S2405_C01_002E": "Agriculture/forestry/fishing/mining",
+    "S2405_C01_003E": "Construction",
+    "S2405_C01_004E": "Manufacturing",
+    "S2405_C01_005E": "Wholesale trade",
+    "S2405_C01_006E": "Retail trade",
+    "S2405_C01_007E": "Transportation/warehousing/utilities",
+    "S2405_C01_008E": "Information",
+    "S2405_C01_009E": "Finance/insurance/real estate/rental",
+    "S2405_C01_010E": "Professional/scientific/management/admin",
+    "S2405_C01_011E": "Educational/health/social",
+    "S2405_C01_012E": "Arts/entertainment/recreation/food",
+    "S2405_C01_013E": "Other services (except public admin)",
+    "S2405_C01_014E": "Public administration"
+}
+ACS_INDUSTRY_RENAMED = ACS_INDUSTRY.rename(columns=s2405_label_map)
+
+# ===============================================================
+# 7. Export to Excel
+# ===============================================================
+with pd.ExcelWriter(OUTFILE, engine="openpyxl") as xw:
+    ACS_MAIN.to_excel(xw, sheet_name="ACS_Wide", index=False)
+    ACS_MAIN_RENAMED.to_excel(xw, sheet_name="ACS_Wide_Renamed", index=False)
+    ACS_INDUSTRY.to_excel(xw, sheet_name="ACS_Industry_Wide", index=False)
+    ACS_INDUSTRY_RENAMED.to_excel(xw, sheet_name="ACS_Industry_Wide_Renamed", index=False)
+
+print(f"✅ Wrote full ACS dataset to: {OUTFILE}")
