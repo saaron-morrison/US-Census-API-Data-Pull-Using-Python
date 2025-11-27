@@ -1,6 +1,7 @@
 # US-Census-API-Data-Pull-Using-Python
 
 📊 Regional Workforce and Economic Data Pull (Indiana Region 5)
+
 🧭 Executive Summary
 
 This data project was developed to support a regional workforce planning effort aimed at understanding how Central Indiana’s economy and labor market have evolved since 2019.
