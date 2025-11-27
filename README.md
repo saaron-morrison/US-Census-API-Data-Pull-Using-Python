@@ -68,11 +68,11 @@ The following research questions guided the data extraction and analysis:
 
 4. Demographic and Social Characteristics
 
-What is the age, racial, and linguistic composition of the region’s population?
+* What is the age, racial, and linguistic composition of the region’s population?
 
-What proportion of residents report a disability or veteran status?
+* What proportion of residents report a disability or veteran status?
 
-How might these demographic indicators intersect with labor market participation?
+* How might these demographic indicators intersect with labor market participation?
 
 🧰 Technical Approach
 1. Data Sources
@@ -90,11 +90,11 @@ ACS Table	Description
 
 2. Geographies
 
-Marion County, IN
+* Marion County, IN
 
-Contiguous counties: Boone, Hamilton, Hancock, Hendricks, Johnson, Madison, Morgan, and Shelby
+* Contiguous counties: Boone, Hamilton, Hancock, Hendricks, Johnson, Madison, Morgan, and Shelby
 
-Indiana statewide totals
+* Indiana statewide totals
 
 3. Metrics Produced
 
